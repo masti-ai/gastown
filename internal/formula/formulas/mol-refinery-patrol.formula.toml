@@ -76,12 +76,24 @@ resolve that placeholder with this rule:
   Integration branches may ONLY be landed via `gt mq integration land <epic-id>`.
   This applies regardless of `auto_land` configuration. The pre-push hook enforces this.
 
+## Active Configuration
+
+**Config: target_branch = {{target_branch}}**
+**Config: run_tests = {{run_tests}}**
+**Config: setup_command = {{setup_command}}**
+**Config: typecheck_command = {{typecheck_command}}**
+**Config: lint_command = {{lint_command}}**
+**Config: build_command = {{build_command}}**
+**Config: test_command = {{test_command}}**
+**Config: integration_branch_refinery_enabled = {{integration_branch_refinery_enabled}}**
+**Config: delete_merged_branches = {{delete_merged_branches}}**
+
 ## Step Execution Order
 
 You MUST process steps in strict DAG order. Walk through each step sequentially,
 unless you are explicitly told to skip to a step."""
 formula = "mol-refinery-patrol"
-version = 9
+version = 10
 
 [vars]
 [vars.wisp_type]

@@ -323,7 +323,7 @@ func outputRefineryPatrolContext(ctx RoleContext) {
 		},
 	}
 	outputPatrolContext(cfg)
-	showFormulaStepsFull(constants.MolRefineryPatrol, cfg.ExtraVars)
+	showFormulaSteps(constants.MolRefineryPatrol, "Patrol Steps")
 }
 
 // buildRefineryPatrolVars loads rig MQ settings and returns --var key=value
