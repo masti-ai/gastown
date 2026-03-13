@@ -32,17 +32,13 @@ import (
 // Uses prefix-based routing to find the correct rig directory.
 // Falls back to rigs.json prefix mapping, then town root.
 func resolveBeadDir(beadID string) string {
+	// Always return town root. bd's own prefix routing (routes.jsonl at town
+	// level) handles dispatching to the correct rig database. Returning the
+	// rig path caused bd to discover rig-local .beads/ with broken nested
+	// routing, leading to "bead not found" errors for valid sc-/st-/etc IDs.
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil {
 		return "."
-	}
-	prefix := beads.ExtractPrefix(beadID)
-	if rigPath := beads.GetRigPathForPrefix(townRoot, prefix); rigPath != "" {
-		return rigPath
-	}
-	// Fallback: consult rigs.json for prefix-to-rig mapping
-	if rigDir := resolveBeadDirFromRigsJSON(townRoot, prefix); rigDir != "" {
-		return rigDir
 	}
 	return townRoot
 }
