@@ -591,7 +591,7 @@ func findAgentWork(ctx RoleContext) (*beads.Issue, error) {
 	// A single attempt suffices — retries would add ~15s of latency to
 	// compaction hooks, causing non-Claude runtimes to report hook failure.
 	maxAttempts := 1
-	if (ctx.Role == RolePolecat || ctx.Role == RoleCrew) && !isCompactResume() {
+	if (ctx.Role == RolePolecat || ctx.Role == RoleCrew || ctx.Role == RoleDog) && !isCompactResume() {
 		maxAttempts = 5
 	}
 
