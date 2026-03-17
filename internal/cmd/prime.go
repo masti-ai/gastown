@@ -821,44 +821,40 @@ func outputMoleculeWorkflow(ctx RoleContext, attachment *beads.AttachmentFields)
 	fmt.Println("The base bead is just a container. The molecule steps define your workflow.")
 }
 
-// outputRalphLoopDirective emits the Ralph Wiggum loop command for ralphcat mode.
-// The agent sees this and runs the slash command, activating the Ralph plugin's
-// stop hook loop. Each iteration gets a fresh context window while preserving
-// artifacts on disk via git.
+// outputRalphLoopDirective emits inline iterative work instructions for ralph mode.
+// Ralph mode is designed for long, iterative workflows (e.g., quality improvement
+// loops) that benefit from committing progress incrementally. The agent works
+// through formula steps iteratively, committing after each meaningful change,
+// and calls gt done when all acceptance criteria are met or no further progress
+// can be made.
 func outputRalphLoopDirective(_ RoleContext, attachment *beads.AttachmentFields) {
-	fmt.Printf("%s\n\n", style.Bold.Render("## 🐱 RALPH LOOP MODE (RALPHCAT)"))
-	fmt.Println("This work uses Ralph Wiggum loop mode for multi-step execution.")
-	fmt.Println("Each step runs in a fresh context window to avoid context exhaustion.")
+	fmt.Printf("%s\n\n", style.Bold.Render("## RALPH LOOP MODE (ITERATIVE WORKFLOW)"))
+	fmt.Println("This work uses iterative loop mode. Work through the steps below,")
+	fmt.Println("committing after each meaningful change. Loop until acceptance criteria")
+	fmt.Println("are met or no further progress can be made.")
 	fmt.Println()
 
-	// Build the ralph prompt from the molecule steps
-	prompt := buildRalphPromptFromMolecule(attachment)
-
-	fmt.Printf("Run this command NOW:\n\n")
-	fmt.Printf("```\n/ralph-loop \"%s\" --max-iterations 20 --completion-phrase \"POLECAT_DONE\"\n```\n\n",
-		strings.ReplaceAll(prompt, "\"", "\\\""))
-
-	fmt.Println("The Ralph loop will:")
-	fmt.Println("1. Execute each step in a fresh context")
-	fmt.Println("2. Preserve work via git commits between steps")
-	fmt.Println("3. Stop when POLECAT_DONE is output or max iterations reached")
-	fmt.Println()
-	fmt.Printf("%s\n", style.Bold.Render("⚠️  Run the /ralph-loop command above. Do NOT work step-by-step manually."))
-}
-
-// buildRalphPromptFromMolecule constructs the Ralph loop prompt text from molecule steps.
-func buildRalphPromptFromMolecule(attachment *beads.AttachmentFields) string {
-	var b strings.Builder
-	b.WriteString("Execute the attached molecule workflow. ")
-	if len(attachment.AttachedVars) > 0 {
-		b.WriteString("Formula vars: " + strings.Join(attachment.AttachedVars, ", ") + ". ")
+	// Show the formula steps inline (same as normal mode) so the agent has
+	// the full checklist. Previously this emitted a /ralph-loop slash command
+	// that didn't exist, causing the polecat to die immediately.
+	if attachment.AttachedFormula != "" {
+		showFormulaStepsFull(attachment.AttachedFormula, strings.Split(attachment.FormulaVars, "\n"))
+		fmt.Println()
 	}
+
 	if attachment.AttachedArgs != "" {
-		b.WriteString("Context: " + attachment.AttachedArgs + ". ")
+		fmt.Printf("%s\n", style.Bold.Render("Context:"))
+		fmt.Printf("  %s\n\n", attachment.AttachedArgs)
 	}
-	b.WriteString("Work through steps in order, committing after each. ")
-	b.WriteString("When all steps complete, output POLECAT_DONE.")
-	return b.String()
+
+	fmt.Printf("%s\n", style.Bold.Render("Iterative workflow:"))
+	fmt.Println("1. Work through the formula steps above")
+	fmt.Println("2. Commit after each meaningful change (preserve progress via git)")
+	fmt.Println("3. After completing a pass, evaluate results against acceptance criteria")
+	fmt.Println("4. If criteria not met, loop: identify the worst gap, fix it, commit, re-evaluate")
+	fmt.Println("5. When all criteria are met (or no further progress possible), run `" + cli.Name() + " done`")
+	fmt.Println()
+	fmt.Printf("%s\n", style.Bold.Render("Commit frequently. Each commit preserves your progress."))
 }
 
 // outputBeadPreview runs `bd show` and displays a truncated preview of the bead.

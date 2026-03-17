@@ -1040,3 +1040,78 @@ func TestCompactResumeReminder_NonPolecatNoGtDone(t *testing.T) {
 		t.Fatalf("compact/resume for non-polecat should NOT mention gt done, got:\n%s", output)
 	}
 }
+
+// TestOutputRalphLoopDirective_NoSlashCommand verifies that ralph mode emits
+// inline iterative work instructions instead of referencing a nonexistent
+// /ralph-loop slash command. This is the regression test for the ralph-loop
+// dies-on-spawn bug: polecats died immediately because Claude tried to run
+// /ralph-loop which didn't exist as a provisioned slash command.
+func TestOutputRalphLoopDirective_NoSlashCommand(t *testing.T) {
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	attachment := &beads.AttachmentFields{
+		Mode:         "ralph",
+		AttachedArgs: "Run story audit, fix worst gap, commit, loop",
+	}
+	outputRalphLoopDirective(RoleContext{}, attachment)
+
+	w.Close()
+	var buf bytes.Buffer
+	io.Copy(&buf, r)
+	os.Stdout = oldStdout
+	output := buf.String()
+
+	// Must NOT reference /ralph-loop (nonexistent slash command)
+	if strings.Contains(output, "/ralph-loop") {
+		t.Fatalf("ralph directive must NOT reference /ralph-loop (slash command doesn't exist), got:\n%s", output)
+	}
+
+	// Must contain iterative workflow instructions
+	if !strings.Contains(output, "RALPH LOOP MODE") {
+		t.Fatalf("expected 'RALPH LOOP MODE' header, got:\n%s", output)
+	}
+	if !strings.Contains(output, "gt done") {
+		t.Fatalf("expected 'gt done' instruction for completion, got:\n%s", output)
+	}
+	if !strings.Contains(output, "Commit frequently") {
+		t.Fatalf("expected commit guidance, got:\n%s", output)
+	}
+
+	// Must include the context/args
+	if !strings.Contains(output, "story audit") {
+		t.Fatalf("expected attached args in output, got:\n%s", output)
+	}
+}
+
+// TestOutputRalphLoopDirective_WithFormula verifies that ralph mode shows
+// formula steps inline (same as normal mode) when a formula is attached.
+func TestOutputRalphLoopDirective_WithFormula(t *testing.T) {
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	attachment := &beads.AttachmentFields{
+		Mode:            "ralph",
+		AttachedFormula: "mol-polecat-work",
+		FormulaVars:     "base_branch=main",
+	}
+	outputRalphLoopDirective(RoleContext{}, attachment)
+
+	w.Close()
+	var buf bytes.Buffer
+	io.Copy(&buf, r)
+	os.Stdout = oldStdout
+	output := buf.String()
+
+	// Should NOT reference /ralph-loop
+	if strings.Contains(output, "/ralph-loop") {
+		t.Fatalf("ralph directive must NOT reference /ralph-loop, got:\n%s", output)
+	}
+
+	// Should show formula steps (from mol-polecat-work)
+	if !strings.Contains(output, "Formula Checklist") {
+		t.Fatalf("expected formula checklist in ralph output, got:\n%s", output)
+	}
+}
