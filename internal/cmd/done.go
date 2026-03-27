@@ -455,11 +455,23 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 		// LLM agents read error messages and self-bypass (the original bug).
 		if aheadCount == 0 {
 			if os.Getenv("GT_POLECAT") != "" && doneCleanupStatus != "clean" && !isNoMergeTask {
-				return fmt.Errorf("cannot complete: no commits on branch ahead of %s\n"+
-					"Polecats must have at least 1 commit to submit.\n"+
-					"If the bug was already fixed upstream: gt done --status DEFERRED\n"+
-					"If you're blocked: gt done --status ESCALATED",
-					originDefault)
+				// Before failing, check whether commits exist on the remote feature branch.
+				// After a polecat pushes to origin/<feature-branch> and submits an MR,
+				// if master advances (e.g., other MRs land), the feature branch is no
+				// longer ahead of origin/master — but the work WAS committed and pushed.
+				// In that case, treat as "MR already submitted" and fall through. (GH#wd7)
+				branchPushedWithWork := false
+				if branch != defaultBranch {
+					pushed, unpushed, pushErr := g.BranchPushedToRemote(branch, "origin")
+					branchPushedWithWork = pushErr == nil && pushed && unpushed == 0
+				}
+				if !branchPushedWithWork {
+					return fmt.Errorf("cannot complete: no commits on branch ahead of %s\n"+
+						"Polecats must have at least 1 commit to submit.\n"+
+						"If the bug was already fixed upstream: gt done --status DEFERRED\n"+
+						"If you're blocked: gt done --status ESCALATED",
+						originDefault)
+				}
 			}
 
 			// Non-polecat (crew/mayor), polecat with --cleanup-status=clean
