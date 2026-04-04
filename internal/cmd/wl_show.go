@@ -20,12 +20,11 @@ var wlShowJSON bool
 var wlShowCmd = &cobra.Command{
 	Use:   "show <work-id>",
 	Short: "Show full details of a wanted item",
-	Long: `Display all fields of a single wanted item from the wl-commons database.
+	Long: `Display all fields of a single wanted item.
 
-Unlike 'gt wl browse' which truncates titles and omits descriptions,
-'gt wl show' displays every field of the item.
-
-The local wl-commons database is queried directly (kept in sync by gt wl sync).
+Reads from the local Dolt server using the database configured in
+mayor/wasteland.json (fork_db). Falls back to local clone or
+clone-then-discard from the configured upstream.
 
 EXAMPLES:
   gt wl show w-abc123             # Display all fields
@@ -47,6 +46,18 @@ func runWLShow(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
 
+	// Resolution order:
+	// 1. Local Dolt server (configured DB from wasteland.json)
+	// 2. Config local_dir (filesystem clone)
+	// 3. Clone from configured upstream (not hardcoded)
+	dbName := wasteland.ResolveDBName(townRoot)
+
+	if doltserver.DatabaseExists(townRoot, dbName) {
+		store := doltserver.NewWLCommonsWithDB(townRoot, dbName)
+		return showWanted(store, wantedID, wlShowJSON)
+	}
+
+	// Fallback to clone-based approach
 	doltPath, err := exec.LookPath("dolt")
 	if err != nil {
 		return fmt.Errorf("dolt not found in PATH — install from https://docs.dolthub.com/introduction/installation")
@@ -85,13 +96,25 @@ func runWLShow(cmd *cobra.Command, args []string) error {
 // defer os.RemoveAll(tmpDir) — a temporary clone was created.
 func resolveWLCommonsClone(townRoot, doltPath string) (cloneDir, tmpDir string, err error) {
 	// Try wasteland config (set by gt wl join).
-	if cfg, cfgErr := wasteland.LoadConfig(townRoot); cfgErr == nil && cfg.LocalDir != "" {
+	cfg, cfgErr := wasteland.LoadConfig(townRoot)
+	if cfgErr == nil && cfg.LocalDir != "" {
 		if _, statErr := os.Stat(filepath.Join(cfg.LocalDir, ".dolt")); statErr == nil {
 			return cfg.LocalDir, "", nil
 		}
 	}
 
-	// Try standard location: .wasteland/hop/wl-commons.
+	// Try standard location using configured upstream (not hardcoded hop/wl-commons).
+	if cfgErr == nil && cfg.Upstream != "" {
+		org, db, parseErr := wasteland.ParseUpstream(cfg.Upstream)
+		if parseErr == nil {
+			stdPath := wasteland.LocalCloneDir(townRoot, org, db)
+			if _, statErr := os.Stat(filepath.Join(stdPath, ".dolt")); statErr == nil {
+				return stdPath, "", nil
+			}
+		}
+	}
+
+	// Try legacy standard location: .wasteland/hop/wl-commons.
 	stdPath := wasteland.LocalCloneDir(townRoot, "hop", "wl-commons")
 	if _, statErr := os.Stat(filepath.Join(stdPath, ".dolt")); statErr == nil {
 		return stdPath, "", nil
@@ -102,14 +125,25 @@ func resolveWLCommonsClone(townRoot, doltPath string) (cloneDir, tmpDir string, 
 		return forkDir, "", nil
 	}
 
-	// No local clone — do a one-time clone-then-discard, like browse.
-	fmt.Fprintf(os.Stderr, "No local wl-commons clone found. Cloning temporarily.\nRun 'gt wl sync' to keep a persistent local copy.\n\n")
+	// No local clone — do a one-time clone-then-discard.
+	// Use configured upstream, not hardcoded.
+	commonsOrg := "hop"
+	commonsDB := "wl-commons"
+	if cfgErr == nil && cfg.Upstream != "" {
+		org, db, parseErr := wasteland.ParseUpstream(cfg.Upstream)
+		if parseErr == nil {
+			commonsOrg = org
+			commonsDB = db
+		}
+	}
+
+	fmt.Fprintf(os.Stderr, "No local database found. Cloning temporarily.\nRun 'gt wl sync' to keep a persistent local copy.\n\n")
 	tmpDir, err = os.MkdirTemp("", "wl-show-*")
 	if err != nil {
 		return "", "", fmt.Errorf("creating temp directory: %w", err)
 	}
-	remote := "hop/wl-commons"
-	cloneDir = filepath.Join(tmpDir, "wl-commons")
+	remote := fmt.Sprintf("%s/%s", commonsOrg, commonsDB)
+	cloneDir = filepath.Join(tmpDir, commonsDB)
 	fmt.Printf("Cloning %s...\n", style.Bold.Render(remote))
 	cloneCmd := exec.Command(doltPath, "clone", remote, cloneDir)
 	cloneCmd.Stderr = os.Stderr

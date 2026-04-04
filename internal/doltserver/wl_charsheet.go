@@ -469,6 +469,123 @@ VALUES ('%s', %s, '%s', %d, %f, %d, %s, %s, '%s');
 	return doltSQLScriptWithRetry(townRoot, script)
 }
 
+// QueryStampsForSubjectDB fetches all stamps where the given handle is the subject,
+// using the specified database name.
+func QueryStampsForSubjectDB(townRoot, dbName, subject string) ([]StampRecord, error) {
+	query := fmt.Sprintf(`USE %s; SELECT id, author, subject, valence, confidence, severity, COALESCE(context_id,'') as context_id, COALESCE(context_type,'') as context_type, COALESCE(stamp_type,'') as stamp_type, COALESCE(skill_tags,'') as skill_tags, COALESCE(message,'') as message, COALESCE(prev_stamp_hash,'') as prev_stamp_hash, COALESCE(stamp_index,-1) as stamp_index, COALESCE(created_at,'') as created_at FROM stamps WHERE subject='%s' ORDER BY created_at DESC;`,
+		dbName, EscapeSQL(subject))
+
+	output, err := doltSQLQuery(townRoot, query)
+	if err != nil {
+		return nil, err
+	}
+
+	rows := parseSimpleCSV(output)
+	if len(rows) == 0 {
+		return nil, nil
+	}
+
+	stamps := make([]StampRecord, 0, len(rows))
+	for _, row := range rows {
+		confidence := 0.0
+		fmt.Sscanf(row["confidence"], "%f", &confidence)
+		idx := -1
+		fmt.Sscanf(row["stamp_index"], "%d", &idx)
+
+		stamps = append(stamps, StampRecord{
+			ID:            row["id"],
+			Author:        row["author"],
+			Subject:       row["subject"],
+			Valence:       row["valence"],
+			Confidence:    confidence,
+			Severity:      row["severity"],
+			ContextID:     row["context_id"],
+			ContextType:   row["context_type"],
+			StampType:     row["stamp_type"],
+			SkillTags:     row["skill_tags"],
+			Message:       row["message"],
+			PrevStampHash: row["prev_stamp_hash"],
+			StampIndex:    idx,
+			CreatedAt:     row["created_at"],
+		})
+	}
+	return stamps, nil
+}
+
+// QueryBadgesDB fetches all badges for a rig handle from the specified database.
+func QueryBadgesDB(townRoot, dbName, handle string) ([]BadgeRecord, error) {
+	query := fmt.Sprintf(`USE %s; SELECT id, badge_type, COALESCE(awarded_at,'') as awarded_at, COALESCE(evidence,'') as evidence FROM badges WHERE rig_handle='%s' ORDER BY awarded_at ASC;`,
+		dbName, EscapeSQL(handle))
+
+	output, err := doltSQLQuery(townRoot, query)
+	if err != nil {
+		return nil, err
+	}
+
+	rows := parseSimpleCSV(output)
+	if len(rows) == 0 {
+		return nil, nil
+	}
+
+	badges := make([]BadgeRecord, 0, len(rows))
+	for _, row := range rows {
+		badges = append(badges, BadgeRecord{
+			ID:        row["id"],
+			Type:      row["badge_type"],
+			AwardedAt: row["awarded_at"],
+			Evidence:  row["evidence"],
+		})
+	}
+	return badges, nil
+}
+
+// QueryAllSubjectsDB returns all distinct subject handles from the stamps table
+// in the specified database.
+func QueryAllSubjectsDB(townRoot, dbName string) ([]string, error) {
+	query := fmt.Sprintf(`USE %s; SELECT DISTINCT subject FROM stamps ORDER BY subject;`, dbName)
+	output, err := doltSQLQuery(townRoot, query)
+	if err != nil {
+		return nil, err
+	}
+	rows := parseSimpleCSV(output)
+	subjects := make([]string, 0, len(rows))
+	for _, row := range rows {
+		if h := row["subject"]; h != "" {
+			subjects = append(subjects, h)
+		}
+	}
+	return subjects, nil
+}
+
+// UpsertLeaderboardDB inserts or updates a leaderboard entry in the specified database.
+func UpsertLeaderboardDB(townRoot, dbName string, entry *LeaderboardEntry) error {
+	now := time.Now().UTC().Format("2006-01-02 15:04:05")
+
+	displayName := "NULL"
+	if entry.DisplayName != "" {
+		displayName = fmt.Sprintf("'%s'", EscapeSQL(entry.DisplayName))
+	}
+	topSkills := "NULL"
+	if entry.TopSkills != "" {
+		topSkills = fmt.Sprintf("'%s'", EscapeSQL(entry.TopSkills))
+	}
+	badges := "NULL"
+	if entry.Badges != "" {
+		badges = fmt.Sprintf("'%s'", EscapeSQL(entry.Badges))
+	}
+
+	script := fmt.Sprintf(`USE %s;
+REPLACE INTO leaderboard (handle, display_name, tier, stamp_count, avg_quality, cluster_breadth, top_skills, badges, computed_at)
+VALUES ('%s', %s, '%s', %d, %f, %d, %s, %s, '%s');
+`,
+		dbName,
+		EscapeSQL(entry.Handle), displayName, EscapeSQL(entry.Tier),
+		entry.StampCount, entry.AvgQuality, entry.ClusterBreadth,
+		topSkills, badges, now)
+
+	return doltSQLScriptWithRetry(townRoot, script)
+}
+
 // RunScorekeeper computes tier standings for all subjects and materializes
 // them into the leaderboard table. Returns the entries and any errors.
 func RunScorekeeper(store WLCommonsStore) ([]*LeaderboardEntry, error) {

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/gastown/internal/doltserver"
 	"github.com/steveyegge/gastown/internal/style"
+	"github.com/steveyegge/gastown/internal/wasteland"
 	"github.com/steveyegge/gastown/internal/workspace"
 )
 
@@ -27,10 +29,11 @@ var wlBrowseCmd = &cobra.Command{
 	Short: "Browse wanted items on the commons board",
 	Args:  cobra.NoArgs,
 	RunE:  runWLBrowse,
-	Long: `Browse the Wasteland wanted board (hop/wl-commons).
+	Long: `Browse the Wasteland wanted board.
 
-Uses the clone-then-discard pattern: clones the commons database to a
-temporary directory, queries it, then deletes the clone.
+Reads from the local Dolt server using the database configured in
+mayor/wasteland.json (fork_db). Falls back to clone-then-discard
+from the configured upstream only if no local database exists.
 
 EXAMPLES:
   gt wl browse                          # All open wanted items
@@ -54,13 +57,87 @@ func init() {
 }
 
 func runWLBrowse(cmd *cobra.Command, args []string) error {
-	if _, err := workspace.FindFromCwdOrError(); err != nil {
+	townRoot, err := workspace.FindFromCwdOrError()
+	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
 
+	query := buildBrowseQuery(BrowseFilter{
+		Status:   wlBrowseStatus,
+		Project:  wlBrowseProject,
+		Type:     wlBrowseType,
+		Priority: wlBrowsePriority,
+		Limit:    wlBrowseLimit,
+	})
+
+	// Resolution order:
+	// 1. Local Dolt server (configured DB from wasteland.json)
+	// 2. Config local_dir (filesystem clone)
+	// 3. Clone from configured upstream (not hardcoded)
+	dbName := wasteland.ResolveDBName(townRoot)
+
+	if doltserver.DatabaseExists(townRoot, dbName) {
+		store := doltserver.NewWLCommonsWithDB(townRoot, dbName)
+		if wlBrowseJSON {
+			output, err := store.QueryJSON(query)
+			if err != nil {
+				return fmt.Errorf("querying local Dolt server: %w", err)
+			}
+			fmt.Print(output)
+			return nil
+		}
+		output, err := store.QueryCSV(query)
+		if err != nil {
+			return fmt.Errorf("querying local Dolt server: %w", err)
+		}
+		return renderWLBrowseFromCSV(output)
+	}
+
+	// Fallback: try config local_dir
+	if cfg, cfgErr := wasteland.LoadConfig(townRoot); cfgErr == nil && cfg.LocalDir != "" {
+		if _, statErr := os.Stat(filepath.Join(cfg.LocalDir, ".dolt")); statErr == nil {
+			return runBrowseFromCloneDir(cfg.LocalDir, query)
+		}
+	}
+
+	// Last resort: clone from configured upstream
+	return runBrowseViaClone(townRoot, query)
+}
+
+// runBrowseFromCloneDir queries a local dolt clone directory.
+func runBrowseFromCloneDir(cloneDir, query string) error {
+	doltPath, err := exec.LookPath("dolt")
+	if err != nil {
+		return fmt.Errorf("dolt not found in PATH")
+	}
+
+	if wlBrowseJSON {
+		sqlCmd := exec.Command(doltPath, "sql", "-q", query, "-r", "json")
+		sqlCmd.Dir = cloneDir
+		sqlCmd.Stdout = os.Stdout
+		sqlCmd.Stderr = os.Stderr
+		return sqlCmd.Run()
+	}
+
+	return renderWLBrowseTable(doltPath, cloneDir, query)
+}
+
+// runBrowseViaClone clones the configured upstream to a temp dir, queries, and discards.
+func runBrowseViaClone(townRoot, query string) error {
 	doltPath, err := exec.LookPath("dolt")
 	if err != nil {
 		return fmt.Errorf("dolt not found in PATH — install from https://docs.dolthub.com/introduction/installation")
+	}
+
+	// Read upstream from config; fall back to hop/wl-commons only if no config
+	commonsOrg := "hop"
+	commonsDB := "wl-commons"
+	if cfg, cfgErr := wasteland.LoadConfig(townRoot); cfgErr == nil && cfg.Upstream != "" {
+		org, db, parseErr := wasteland.ParseUpstream(cfg.Upstream)
+		if parseErr == nil {
+			commonsOrg = org
+			commonsDB = db
+		}
 	}
 
 	tmpDir, err := os.MkdirTemp("", "wl-browse-*")
@@ -69,11 +146,9 @@ func runWLBrowse(cmd *cobra.Command, args []string) error {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	commonsOrg := "hop"
-	commonsDB := "wl-commons"
 	cloneDir := filepath.Join(tmpDir, commonsDB)
-
 	remote := fmt.Sprintf("%s/%s", commonsOrg, commonsDB)
+
 	if !wlBrowseJSON {
 		fmt.Printf("Cloning %s...\n", style.Bold.Render(remote))
 	}
@@ -89,14 +164,6 @@ func runWLBrowse(cmd *cobra.Command, args []string) error {
 		fmt.Printf("%s Cloned successfully\n\n", style.Bold.Render("✓"))
 	}
 
-	query := buildBrowseQuery(BrowseFilter{
-		Status:   wlBrowseStatus,
-		Project:  wlBrowseProject,
-		Type:     wlBrowseType,
-		Priority: wlBrowsePriority,
-		Limit:    wlBrowseLimit,
-	})
-
 	if wlBrowseJSON {
 		sqlCmd := exec.Command(doltPath, "sql", "-q", query, "-r", "json")
 		sqlCmd.Dir = cloneDir
@@ -106,6 +173,39 @@ func runWLBrowse(cmd *cobra.Command, args []string) error {
 	}
 
 	return renderWLBrowseTable(doltPath, cloneDir, query)
+}
+
+// renderWLBrowseFromCSV renders browse output from CSV data returned by the Dolt server.
+func renderWLBrowseFromCSV(csvData string) error {
+	rows := wlParseCSV(csvData)
+	if len(rows) <= 1 {
+		fmt.Println("No wanted items found matching your filters.")
+		return nil
+	}
+
+	tbl := style.NewTable(
+		style.Column{Name: "ID", Width: 12},
+		style.Column{Name: "TITLE", Width: 40},
+		style.Column{Name: "PROJECT", Width: 12},
+		style.Column{Name: "TYPE", Width: 10},
+		style.Column{Name: "PRI", Width: 4, Align: style.AlignRight},
+		style.Column{Name: "POSTED BY", Width: 16},
+		style.Column{Name: "STATUS", Width: 10},
+		style.Column{Name: "EFFORT", Width: 8},
+	)
+
+	for _, row := range rows[1:] {
+		if len(row) < 8 {
+			continue
+		}
+		pri := wlFormatPriority(row[4])
+		tbl.AddRow(row[0], row[1], row[2], row[3], pri, row[5], row[6], row[7])
+	}
+
+	fmt.Printf("Wanted items (%d):\n\n", len(rows)-1)
+	fmt.Print(tbl.Render())
+
+	return nil
 }
 
 // BrowseFilter holds filter parameters for building a browse query.
@@ -240,3 +340,6 @@ func wlFormatPriority(pri string) string {
 		return pri
 	}
 }
+
+// suppress unused import warning
+var _ = json.Marshal

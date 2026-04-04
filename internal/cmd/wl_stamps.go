@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/gastown/internal/doltserver"
 	"github.com/steveyegge/gastown/internal/style"
+	"github.com/steveyegge/gastown/internal/wasteland"
 	"github.com/steveyegge/gastown/internal/workspace"
 )
 
@@ -32,6 +33,10 @@ var wlStampsCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE:  runWLStamps,
 	Long: `Query the stamps table for a given rig handle.
+
+Reads from the local Dolt server using the database configured in
+mayor/wasteland.json (fork_db). Falls back to clone-then-discard
+from the configured upstream only if no local database exists.
 
 Shows stamps where the rig is the subject (worker being stamped).
 Use --author to filter by who issued the stamp. Use --skill, --type,
@@ -115,44 +120,6 @@ func runWLStamps(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
 
-	doltPath, err := exec.LookPath("dolt")
-	if err != nil {
-		return fmt.Errorf("dolt not found in PATH — install from https://docs.dolthub.com/introduction/installation")
-	}
-
-	// Try local fork first (fast path)
-	forkDir := findWLCommonsFork(townRoot)
-	cloneDir := forkDir
-
-	// No local fork — clone fresh
-	if cloneDir == "" {
-		tmpDir, tmpErr := os.MkdirTemp("", "wl-stamps-*")
-		if tmpErr != nil {
-			return fmt.Errorf("creating temp directory: %w", tmpErr)
-		}
-		defer os.RemoveAll(tmpDir)
-
-		commonsOrg := "hop"
-		commonsDB := "wl-commons"
-		cloneDir = filepath.Join(tmpDir, commonsDB)
-		remote := fmt.Sprintf("%s/%s", commonsOrg, commonsDB)
-
-		if !wlStampsJSON {
-			fmt.Printf("Cloning %s...\n", style.Bold.Render(remote))
-		}
-
-		cloneCmd := exec.Command(doltPath, "clone", remote, cloneDir)
-		if !wlStampsJSON {
-			cloneCmd.Stderr = os.Stderr
-		}
-		if err := cloneCmd.Run(); err != nil {
-			return fmt.Errorf("cloning %s: %w\nEnsure the database exists on DoltHub: https://www.dolthub.com/%s", remote, err, remote)
-		}
-		if !wlStampsJSON {
-			fmt.Printf("%s Cloned successfully\n\n", style.Bold.Render("✓"))
-		}
-	}
-
 	query := buildStampsQuery(StampsFilter{
 		Subject:     wlStampsRig,
 		Author:      wlStampsAuthor,
@@ -164,6 +131,48 @@ func runWLStamps(cmd *cobra.Command, args []string) error {
 		Limit:       wlStampsLimit,
 	})
 
+	// Resolution order:
+	// 1. Local Dolt server (configured DB from wasteland.json)
+	// 2. Config local_dir (filesystem clone)
+	// 3. Clone from configured upstream (not hardcoded)
+	dbName := wasteland.ResolveDBName(townRoot)
+
+	if doltserver.DatabaseExists(townRoot, dbName) {
+		store := doltserver.NewWLCommonsWithDB(townRoot, dbName)
+		if wlStampsJSON {
+			output, jsonErr := store.QueryJSON(query)
+			if jsonErr != nil {
+				return fmt.Errorf("querying local Dolt server: %w", jsonErr)
+			}
+			fmt.Print(output)
+			return nil
+		}
+		// For stamps we need JSON output for richer parsing of nested fields
+		output, jsonErr := store.QueryJSON(query)
+		if jsonErr != nil {
+			return fmt.Errorf("querying local Dolt server: %w", jsonErr)
+		}
+		return renderStampsFromJSON(output)
+	}
+
+	// Fallback: try config local_dir
+	if cfg, cfgErr := wasteland.LoadConfig(townRoot); cfgErr == nil && cfg.LocalDir != "" {
+		if _, statErr := os.Stat(filepath.Join(cfg.LocalDir, ".dolt")); statErr == nil {
+			return runStampsFromCloneDir(cfg.LocalDir, query)
+		}
+	}
+
+	// Last resort: clone from configured upstream
+	return runStampsViaClone(townRoot, query)
+}
+
+// runStampsFromCloneDir queries stamps from a local dolt clone directory.
+func runStampsFromCloneDir(cloneDir, query string) error {
+	doltPath, err := exec.LookPath("dolt")
+	if err != nil {
+		return fmt.Errorf("dolt not found in PATH")
+	}
+
 	if wlStampsJSON {
 		sqlCmd := exec.Command(doltPath, "sql", "-q", query, "-r", "json")
 		sqlCmd.Dir = cloneDir
@@ -173,6 +182,103 @@ func runWLStamps(cmd *cobra.Command, args []string) error {
 	}
 
 	return renderStampsTable(doltPath, cloneDir, query)
+}
+
+// runStampsViaClone clones the configured upstream to a temp dir, queries, and discards.
+func runStampsViaClone(townRoot, query string) error {
+	doltPath, err := exec.LookPath("dolt")
+	if err != nil {
+		return fmt.Errorf("dolt not found in PATH — install from https://docs.dolthub.com/introduction/installation")
+	}
+
+	// Read upstream from config; fall back to hop/wl-commons only if no config
+	commonsOrg := "hop"
+	commonsDB := "wl-commons"
+	if cfg, cfgErr := wasteland.LoadConfig(townRoot); cfgErr == nil && cfg.Upstream != "" {
+		org, db, parseErr := wasteland.ParseUpstream(cfg.Upstream)
+		if parseErr == nil {
+			commonsOrg = org
+			commonsDB = db
+		}
+	}
+
+	tmpDir, err := os.MkdirTemp("", "wl-stamps-*")
+	if err != nil {
+		return fmt.Errorf("creating temp directory: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	cloneDir := filepath.Join(tmpDir, commonsDB)
+	remote := fmt.Sprintf("%s/%s", commonsOrg, commonsDB)
+
+	if !wlStampsJSON {
+		fmt.Printf("Cloning %s...\n", style.Bold.Render(remote))
+	}
+
+	cloneCmd := exec.Command(doltPath, "clone", remote, cloneDir)
+	if !wlStampsJSON {
+		cloneCmd.Stderr = os.Stderr
+	}
+	if err := cloneCmd.Run(); err != nil {
+		return fmt.Errorf("cloning %s: %w\nEnsure the database exists on DoltHub: https://www.dolthub.com/%s", remote, err, remote)
+	}
+	if !wlStampsJSON {
+		fmt.Printf("%s Cloned successfully\n\n", style.Bold.Render("✓"))
+	}
+
+	if wlStampsJSON {
+		sqlCmd := exec.Command(doltPath, "sql", "-q", query, "-r", "json")
+		sqlCmd.Dir = cloneDir
+		sqlCmd.Stdout = os.Stdout
+		sqlCmd.Stderr = os.Stderr
+		return sqlCmd.Run()
+	}
+
+	return renderStampsTable(doltPath, cloneDir, query)
+}
+
+// renderStampsFromJSON renders stamps from JSON data returned by the Dolt server.
+func renderStampsFromJSON(jsonData string) error {
+	var result struct {
+		Rows []map[string]interface{} `json:"rows"`
+	}
+	if err := json.Unmarshal([]byte(jsonData), &result); err != nil {
+		return fmt.Errorf("parsing response: %w", err)
+	}
+
+	if len(result.Rows) == 0 {
+		fmt.Printf("No stamps found for rig %q.\n", wlStampsRig)
+		return nil
+	}
+
+	tbl := style.NewTable(
+		style.Column{Name: "ID", Width: 16},
+		style.Column{Name: "AUTHOR", Width: 20},
+		style.Column{Name: "VALENCE", Width: 28},
+		style.Column{Name: "CONF", Width: 5, Align: style.AlignRight},
+		style.Column{Name: "SEVERITY", Width: 8},
+		style.Column{Name: "TYPE", Width: 14},
+		style.Column{Name: "SKILLS", Width: 18},
+		style.Column{Name: "DATE", Width: 10},
+	)
+
+	for _, row := range result.Rows {
+		id := getString(row, "id")
+		author := getString(row, "author")
+		valence := formatValence(row["valence"])
+		conf := getString(row, "confidence")
+		severity := getString(row, "severity")
+		ctxType := getString(row, "context_type")
+		skills := formatSkillTags(row["skill_tags"])
+		date := formatStampDate(getString(row, "created_at"))
+
+		tbl.AddRow(id, author, valence, conf, severity, ctxType, skills, date)
+	}
+
+	fmt.Printf("Stamps for %s (%d):\n\n", style.Bold.Render(wlStampsRig), len(result.Rows))
+	fmt.Print(tbl.Render())
+
+	return nil
 }
 
 func renderStampsTable(doltPath, cloneDir, query string) error {
@@ -230,7 +336,7 @@ func renderStampsTable(doltPath, cloneDir, query string) error {
 }
 
 // formatValence renders the valence JSON into a compact human-readable string.
-// e.g. {"quality": 4, "reliability": 3, "creativity": 2} → "Q:4 R:3 C:2"
+// e.g. {"quality": 4, "reliability": 3, "creativity": 2} -> "Q:4 R:3 C:2"
 func formatValence(v interface{}) string {
 	if v == nil {
 		return ""

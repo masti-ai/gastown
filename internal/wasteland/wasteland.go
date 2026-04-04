@@ -264,6 +264,21 @@ func LocalCloneDir(townRoot, upstreamOrg, upstreamDB string) string {
 	return filepath.Join(WastelandDir(townRoot), upstreamOrg, upstreamDB)
 }
 
+// ResolveDBName reads mayor/wasteland.json and returns the Dolt database name
+// to use for local server queries. It converts fork_db hyphens to underscores
+// (Dolt databases use underscores). Falls back to "wl_commons" if no config.
+func ResolveDBName(townRoot string) string {
+	cfg, err := LoadConfig(townRoot)
+	if err != nil {
+		return "wl_commons"
+	}
+	if cfg.ForkDB != "" {
+		// Dolt DB names use underscores, not hyphens
+		return strings.ReplaceAll(cfg.ForkDB, "-", "_")
+	}
+	return "wl_commons"
+}
+
 // escapeSQLString escapes backslashes and single quotes for SQL string literals.
 func escapeSQLString(s string) string {
 	s = strings.ReplaceAll(s, `\`, `\\`)

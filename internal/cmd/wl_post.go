@@ -73,7 +73,8 @@ func runWlPost(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	store := doltserver.NewWLCommons(townRoot)
+	dbName := wasteland.ResolveDBName(townRoot)
+	store := doltserver.NewWLCommonsWithDB(townRoot, dbName)
 
 	wlCfg, err := wasteland.LoadConfig(townRoot)
 	if err != nil {
