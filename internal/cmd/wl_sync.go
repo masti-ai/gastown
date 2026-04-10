@@ -17,12 +17,12 @@ var wlSyncUpgrade bool
 
 var wlSyncCmd = &cobra.Command{
 	Use:   "sync",
-	Short: "Pull upstream changes into local wl-commons fork",
+	Short: "Pull upstream changes into local wasteland fork",
 	Args:  cobra.NoArgs,
 	RunE:  runWLSync,
-	Long: `Sync your local wl-commons fork with the upstream hop/wl-commons.
+	Long: `Sync your local wasteland fork with the upstream commons.
 
-If you have a local fork of wl-commons (created by gt wl join), this pulls
+If you have a local fork of a wasteland commons (created by gt wl join), this pulls
 the latest changes from upstream.
 
 Schema evolution is handled automatically based on semantic versioning:
@@ -65,7 +65,7 @@ func runWLSync(cmd *cobra.Command, args []string) error {
 	}
 
 	if forkDir == "" {
-		return fmt.Errorf("no local wl-commons fork found\n\nJoin a wasteland first: gt wl join <org/db>")
+		return fmt.Errorf("no local wasteland fork found\n\nJoin a wasteland first: gt wl join <org/db>")
 	}
 
 	fmt.Printf("Local fork: %s\n", style.Dim.Render(forkDir))

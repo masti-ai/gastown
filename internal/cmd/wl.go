@@ -31,7 +31,7 @@ sovereign fork of a shared commons database containing the wanted board
 (open work), rig registry, and validated completions.
 
 Getting started:
-  gt wl join steveyegge/wl-commons   # Join the default wasteland
+  gt wl join <org>/<commons>             # Join a wasteland (e.g., hop/wl-commons)
 
 See https://github.com/steveyegge/gastown for more information.`,
 }
@@ -48,16 +48,16 @@ This command:
   4. Pushes the registration to your fork
   5. Saves wasteland configuration locally
 
-The upstream argument is a DoltHub path like 'steveyegge/wl-commons'.
+The upstream argument is a DoltHub path like 'hop/wl-commons' or 'deepwork/wl-commons'.
 
 Required environment variables:
   DOLTHUB_TOKEN  - Your DoltHub API token
   DOLTHUB_ORG    - Your DoltHub organization name
 
 Examples:
-  gt wl join steveyegge/wl-commons
-  gt wl join steveyegge/wl-commons --handle my-rig
-  gt wl join steveyegge/wl-commons --display-name "Alice's Workshop"`,
+  gt wl join hop/wl-commons
+  gt wl join hop/wl-commons --handle my-rig
+  gt wl join hop/wl-commons --display-name "Alice's Workshop"`,
 	Args: cobra.ExactArgs(1),
 	RunE: runWlJoin,
 }
