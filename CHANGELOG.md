@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **GT Monitor dashboard and API** (cross-repo `gt-monitor`) — Added missing
+  `/studio` Next.js route, `/v1/usage` endpoint, and `/v1/exec/*` handlers for
+  `sling`, `bead create/close`, `rig boot/dock`, `convoy`, `nudge`, `mail send`,
+  `estop`, and scheduler controls. Fixed dashboard runtime null-safety errors
+  when snapshot fields are undefined. (`hq-oek`)
+
 ## [1.0.0] - 2026-04-02
 
 ### Added
