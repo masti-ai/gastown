@@ -1,11 +1,12 @@
 package cmd
 
 import (
-	"github.com/steveyegge/gastown/internal/cli"
 	"encoding/json"
 	"fmt"
+	"github.com/steveyegge/gastown/internal/cli"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -830,4 +831,124 @@ func explain(condition bool, reason string) {
 	if primeExplain && condition {
 		fmt.Printf("\n[EXPLAIN] %s\n", reason)
 	}
+}
+
+// outputRecentStamps surfaces the agent's last 3 wasteland stamps inline
+// during prime so workers can see review feedback without having to dig
+// through Dolt themselves (gtm-rglf). Silent when there are no stamps,
+// when the role has no agent address, or when the Dolt server is
+// unreachable — this is best-effort context, not a hard dependency.
+//
+// Stamps are sourced from gt_collab.stamps joined to gt_collab.completions
+// where completed_by matches the agent identity (e.g. gt_monitor/crew/dashboard).
+func outputRecentStamps(ctx RoleContext) {
+	addr := getAgentIdentity(ctx)
+	if addr == "" || strings.HasPrefix(addr, "mayor") || strings.HasPrefix(addr, "deacon") || strings.HasPrefix(addr, "boot") {
+		return
+	}
+	host := os.Getenv("DOLT_HOST")
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	port := os.Getenv("DOLT_PORT")
+	if port == "" {
+		port = "3307"
+	}
+	// Use JSON output so free-text messages with pipes/quotes don't break
+	// row parsing. Dolt emits {"rows":[{...},...]} which decodes cleanly.
+	query := fmt.Sprintf(
+		"SELECT DATE_FORMAT(s.created_at, '%%Y-%%m-%%d %%H:%%i') ts, "+
+			"JSON_EXTRACT(s.valence,'$.quality') q, "+
+			"JSON_EXTRACT(s.valence,'$.reliability') r, "+
+			"JSON_EXTRACT(s.valence,'$.creativity') c, "+
+			"IFNULL(s.message,'') msg "+
+			"FROM gt_collab.stamps s JOIN gt_collab.completions c ON c.stamp_id = s.id "+
+			"WHERE c.completed_by = '%s' "+
+			"ORDER BY s.created_at DESC LIMIT 3;",
+		strings.ReplaceAll(addr, "'", "''"),
+	)
+	cmd := exec.Command("dolt", "--host", host, "--port", port,
+		"--user", "root", "--no-tls", "--password", "", "sql",
+		"-r", "json", "--batch", "-q", query)
+	cmd.Env = append(os.Environ(), "DOLT_PASSWORD=")
+	out, err := cmd.Output()
+	if err != nil {
+		return
+	}
+	rows := parseStampRows(out)
+	if len(rows) == 0 {
+		return
+	}
+	fmt.Println()
+	fmt.Printf("%s\n\n", style.Bold.Render("## 📊 Recent Stamps (your work, last 3)"))
+	for _, r := range rows {
+		avg := (r.q + r.r + r.c) / 3.0
+		marker := ""
+		if avg <= 2 {
+			marker = " 🚨"
+		} else if avg >= 4 {
+			marker = " 🌟"
+		}
+		fmt.Printf("- **%s** Q:%g R:%g C:%g (avg %.1f)%s\n",
+			r.ts, r.q, r.r, r.c, avg, marker)
+		if r.msg != "" {
+			msg := r.msg
+			if len(msg) > 400 {
+				msg = msg[:400] + "…"
+			}
+			fmt.Printf("  %s\n", msg)
+		}
+	}
+	fmt.Println()
+}
+
+type stampRow struct {
+	ts      string
+	q, r, c float64
+	msg     string
+}
+
+// parseStampRows decodes Dolt's JSON output ({"rows":[{...}]}) into stampRow
+// values. Numeric columns come back as JSON strings (Dolt quirk for
+// JSON_EXTRACT'd ints), so we parse each number tolerantly. Returns nil on
+// any decode failure — the caller will silently skip the section.
+func parseStampRows(out []byte) []stampRow {
+	var doc struct {
+		Rows []map[string]any `json:"rows"`
+	}
+	if err := json.Unmarshal(out, &doc); err != nil {
+		return nil
+	}
+	var rows []stampRow
+	for _, m := range doc.Rows {
+		ts, _ := m["ts"].(string)
+		q, qOK := stampNum(m["q"])
+		r, rOK := stampNum(m["r"])
+		c, cOK := stampNum(m["c"])
+		if !qOK || !rOK || !cOK {
+			continue
+		}
+		msg, _ := m["msg"].(string)
+		// Collapse whitespace runs so multi-line reasoning renders as one
+		// indented line under the score header.
+		msg = strings.Join(strings.Fields(msg), " ")
+		rows = append(rows, stampRow{ts: ts, q: q, r: r, c: c, msg: msg})
+	}
+	return rows
+}
+
+// stampNum coerces Dolt's mixed numeric encoding (string or float64) into a
+// float64. JSON_EXTRACT returns numbers as quoted strings; plain SELECT
+// columns return as float64.
+func stampNum(v any) (float64, bool) {
+	switch x := v.(type) {
+	case float64:
+		return x, true
+	case string:
+		var f float64
+		if _, err := fmt.Sscanf(strings.TrimSpace(x), "%f", &f); err == nil {
+			return f, true
+		}
+	}
+	return 0, false
 }

@@ -484,6 +484,7 @@ func outputRoleContext(ctx RoleContext) (string, error) {
 	outputContextFile(ctx)
 	outputHandoffContent(ctx)
 	outputAttachmentStatus(ctx)
+	outputRecentStamps(ctx)
 	return formula, nil
 }
 
@@ -533,7 +534,7 @@ var memoryTypeLabels = map[string]string{
 	"feedback":  "Behavioral Rules (from user feedback)",
 	"user":      "User Context",
 	"project":   "Project Context",
-	"reference":  "Reference Links",
+	"reference": "Reference Links",
 	"general":   "General",
 }
 
