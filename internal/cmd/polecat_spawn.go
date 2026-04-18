@@ -344,11 +344,17 @@ func (s *SpawnedPolecatInfo) StartSession() (string, error) {
 		return "", fmt.Errorf("rig '%s' not found", s.RigName)
 	}
 
-	// Resolve account
+	// Resolve account. Falls back to the invoker's CLAUDE_CONFIG_DIR when the
+	// accounts config doesn't resolve (no accounts.json, or single-account mode)
+	// so the spawn inherits the parent's auth state instead of landing on the
+	// default ~/.claude.json and triggering first-run onboarding (gt-j47).
 	accountsPath := constants.MayorAccountsPath(townRoot)
 	claudeConfigDir, _, err := config.ResolveAccountConfigDir(accountsPath, s.account)
 	if err != nil {
 		return "", fmt.Errorf("resolving account: %w", err)
+	}
+	if claudeConfigDir == "" {
+		claudeConfigDir = os.Getenv("CLAUDE_CONFIG_DIR")
 	}
 
 	// Start session

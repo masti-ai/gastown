@@ -110,6 +110,12 @@ func runCrewAt(cmd *cobra.Command, args []string) error {
 	if accountHandle != "" {
 		fmt.Printf("Using account: %s\n", accountHandle)
 	}
+	// Fall back to the invoker's CLAUDE_CONFIG_DIR when accounts config doesn't
+	// resolve, so the crew session inherits parent auth state instead of landing
+	// on the default ~/.claude.json (gt-j47).
+	if claudeConfigDir == "" {
+		claudeConfigDir = os.Getenv("CLAUDE_CONFIG_DIR")
+	}
 
 	var runtimeConfig *config.RuntimeConfig
 	if crewAgentOverride != "" {

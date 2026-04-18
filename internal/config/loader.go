@@ -825,8 +825,10 @@ func validateAccountsConfig(c *AccountsConfig) error {
 	if c.Accounts == nil {
 		c.Accounts = make(map[string]Account)
 	}
-	// Validate default refers to an existing account (if set and accounts exist)
-	if c.Default != "" && len(c.Accounts) > 0 {
+	// Validate default refers to an existing account (if set).
+	// An orphan default (e.g. default set but account entry missing) silently
+	// broke priority-3 resolution in ResolveAccountConfigDir for fresh spawns (gt-j47).
+	if c.Default != "" {
 		if _, ok := c.Accounts[c.Default]; !ok {
 			return fmt.Errorf("%w: default account '%s' not found in accounts", ErrMissingField, c.Default)
 		}
@@ -872,12 +874,20 @@ func (c *AccountsConfig) GetDefaultAccount() *Account {
 //
 // Returns empty string if no account configured or resolved.
 // Returns the handle that was resolved as second value.
+//
+// A missing accounts.json is treated as "no accounts configured" and returns
+// empty without error (single-account mode). Other load failures (corrupt JSON,
+// invalid schema) return an error so the caller can surface the misconfiguration
+// instead of silently spawning against the default ~/.claude.json (gt-j47).
 func ResolveAccountConfigDir(accountsPath, accountFlag string) (configDir, handle string, err error) {
 	// Load accounts config
 	cfg, loadErr := LoadAccountsConfig(accountsPath)
 	if loadErr != nil {
-		// No accounts configured - that's OK, return empty
-		return "", "", nil
+		if errors.Is(loadErr, ErrNotFound) {
+			// No accounts.json — legitimate single-account mode. Return empty.
+			return "", "", nil
+		}
+		return "", "", fmt.Errorf("loading accounts config: %w", loadErr)
 	}
 
 	// Priority 1: GT_ACCOUNT env var
@@ -898,12 +908,16 @@ func ResolveAccountConfigDir(accountsPath, accountFlag string) (configDir, handl
 		return expandPath(acct.ConfigDir), accountFlag, nil
 	}
 
-	// Priority 3: Default account
+	// Priority 3: Default account.
+	// validateAccountsConfig guarantees that a non-empty Default references an
+	// existing account, so GetDefaultAccount returning nil here is a real error
+	// worth surfacing rather than swallowing.
 	if cfg.Default != "" {
 		acct := cfg.GetDefaultAccount()
-		if acct != nil {
-			return expandPath(acct.ConfigDir), cfg.Default, nil
+		if acct == nil {
+			return "", "", fmt.Errorf("default account '%s' not found in accounts config", cfg.Default)
 		}
+		return expandPath(acct.ConfigDir), cfg.Default, nil
 	}
 
 	return "", "", nil

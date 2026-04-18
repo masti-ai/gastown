@@ -727,6 +727,208 @@ func TestLoadAccountsConfigNotFound(t *testing.T) {
 	}
 }
 
+// TestResolveAccountConfigDir covers the priority order and the fresh-install
+// first-run scenario from gt-j47: a polecat spawn with accounts.json holding a
+// default and no GT_ACCOUNT/--account must still resolve the default's config
+// dir. Previously the priority-3 fallback silently returned empty on certain
+// edge cases (orphan default, bubbled-up load errors), causing Claude Code to
+// launch against the unauthenticated ~/.claude.json.
+func TestResolveAccountConfigDir(t *testing.T) {
+	// Not parallel: mutates GT_ACCOUNT.
+	writeAccounts := func(t *testing.T, cfg *AccountsConfig) string {
+		t.Helper()
+		dir := t.TempDir()
+		path := filepath.Join(dir, "accounts.json")
+		if err := SaveAccountsConfig(path, cfg); err != nil {
+			t.Fatalf("SaveAccountsConfig: %v", err)
+		}
+		return path
+	}
+
+	origEnv, hadEnv := os.LookupEnv("GT_ACCOUNT")
+	t.Cleanup(func() {
+		if hadEnv {
+			os.Setenv("GT_ACCOUNT", origEnv)
+		} else {
+			os.Unsetenv("GT_ACCOUNT")
+		}
+	})
+
+	t.Run("fresh install with default resolves without GT_ACCOUNT or flag", func(t *testing.T) {
+		os.Unsetenv("GT_ACCOUNT")
+		path := writeAccounts(t, &AccountsConfig{
+			Version: CurrentAccountsVersion,
+			Accounts: map[string]Account{
+				"deepwork-claude": {ConfigDir: "/home/user/.claude-accounts/deepwork-claude"},
+			},
+			Default: "deepwork-claude",
+		})
+
+		configDir, handle, err := ResolveAccountConfigDir(path, "")
+		if err != nil {
+			t.Fatalf("ResolveAccountConfigDir: %v", err)
+		}
+		if handle != "deepwork-claude" {
+			t.Errorf("handle = %q, want 'deepwork-claude'", handle)
+		}
+		if configDir != "/home/user/.claude-accounts/deepwork-claude" {
+			t.Errorf("configDir = %q, want '/home/user/.claude-accounts/deepwork-claude'", configDir)
+		}
+	})
+
+	t.Run("GT_ACCOUNT env takes priority over default", func(t *testing.T) {
+		os.Setenv("GT_ACCOUNT", "work")
+		path := writeAccounts(t, &AccountsConfig{
+			Version: CurrentAccountsVersion,
+			Accounts: map[string]Account{
+				"personal": {ConfigDir: "/tmp/personal"},
+				"work":     {ConfigDir: "/tmp/work"},
+			},
+			Default: "personal",
+		})
+
+		configDir, handle, err := ResolveAccountConfigDir(path, "")
+		if err != nil {
+			t.Fatalf("ResolveAccountConfigDir: %v", err)
+		}
+		if handle != "work" {
+			t.Errorf("handle = %q, want 'work'", handle)
+		}
+		if configDir != "/tmp/work" {
+			t.Errorf("configDir = %q, want '/tmp/work'", configDir)
+		}
+	})
+
+	t.Run("--account flag takes priority over default", func(t *testing.T) {
+		os.Unsetenv("GT_ACCOUNT")
+		path := writeAccounts(t, &AccountsConfig{
+			Version: CurrentAccountsVersion,
+			Accounts: map[string]Account{
+				"personal": {ConfigDir: "/tmp/personal"},
+				"work":     {ConfigDir: "/tmp/work"},
+			},
+			Default: "personal",
+		})
+
+		configDir, handle, err := ResolveAccountConfigDir(path, "work")
+		if err != nil {
+			t.Fatalf("ResolveAccountConfigDir: %v", err)
+		}
+		if handle != "work" {
+			t.Errorf("handle = %q, want 'work'", handle)
+		}
+		if configDir != "/tmp/work" {
+			t.Errorf("configDir = %q, want '/tmp/work'", configDir)
+		}
+	})
+
+	t.Run("missing accounts.json returns empty without error", func(t *testing.T) {
+		os.Unsetenv("GT_ACCOUNT")
+		configDir, handle, err := ResolveAccountConfigDir(
+			filepath.Join(t.TempDir(), "does-not-exist.json"), "")
+		if err != nil {
+			t.Fatalf("ResolveAccountConfigDir: expected nil err for missing file, got %v", err)
+		}
+		if configDir != "" || handle != "" {
+			t.Errorf("expected empty result, got configDir=%q handle=%q", configDir, handle)
+		}
+	})
+
+	t.Run("corrupt accounts.json surfaces error instead of silently masking", func(t *testing.T) {
+		os.Unsetenv("GT_ACCOUNT")
+		dir := t.TempDir()
+		path := filepath.Join(dir, "accounts.json")
+		if err := os.WriteFile(path, []byte("{not valid json"), 0644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+
+		_, _, err := ResolveAccountConfigDir(path, "")
+		if err == nil {
+			t.Fatal("expected error for corrupt accounts.json, got nil")
+		}
+	})
+
+	t.Run("invalid GT_ACCOUNT returns error", func(t *testing.T) {
+		os.Setenv("GT_ACCOUNT", "no-such-account")
+		path := writeAccounts(t, &AccountsConfig{
+			Version: CurrentAccountsVersion,
+			Accounts: map[string]Account{
+				"real": {ConfigDir: "/tmp/real"},
+			},
+			Default: "real",
+		})
+
+		_, _, err := ResolveAccountConfigDir(path, "")
+		if err == nil {
+			t.Fatal("expected error for bogus GT_ACCOUNT, got nil")
+		}
+	})
+
+	t.Run("expands tilde in config_dir", func(t *testing.T) {
+		os.Unsetenv("GT_ACCOUNT")
+		path := writeAccounts(t, &AccountsConfig{
+			Version: CurrentAccountsVersion,
+			Accounts: map[string]Account{
+				"user": {ConfigDir: "~/.claude-accounts/user"},
+			},
+			Default: "user",
+		})
+
+		configDir, _, err := ResolveAccountConfigDir(path, "")
+		if err != nil {
+			t.Fatalf("ResolveAccountConfigDir: %v", err)
+		}
+		if strings.HasPrefix(configDir, "~") {
+			t.Errorf("configDir not expanded: %q", configDir)
+		}
+		home, _ := os.UserHomeDir()
+		want := filepath.Join(home, ".claude-accounts/user")
+		if configDir != want {
+			t.Errorf("configDir = %q, want %q", configDir, want)
+		}
+	})
+}
+
+// TestValidateAccountsConfig_OrphanDefault verifies that validation rejects an
+// accounts.json where `default` is set but the named account is missing —
+// even when the accounts map is empty. Previously the validator's
+// `len(c.Accounts) > 0` guard let this corrupt state pass silently, which
+// made ResolveAccountConfigDir fall through to the "no account" path and
+// caused fresh spawns to ignore the configured default (gt-j47).
+func TestValidateAccountsConfig_OrphanDefault(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		config *AccountsConfig
+	}{
+		{
+			name: "default set but accounts map empty",
+			config: &AccountsConfig{
+				Version:  CurrentAccountsVersion,
+				Accounts: map[string]Account{},
+				Default:  "deepwork-claude",
+			},
+		},
+		{
+			name: "default set but accounts map nil",
+			config: &AccountsConfig{
+				Version: CurrentAccountsVersion,
+				Default: "deepwork-claude",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateAccountsConfig(tt.config)
+			if err == nil {
+				t.Fatal("expected error for orphan default, got nil")
+			}
+		})
+	}
+}
+
 func TestMessagingConfigRoundTrip(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

@@ -1019,7 +1019,10 @@ func runStartCrew(cmd *cobra.Command, args []string) error {
 	crewGit := git.NewGit(r.Path)
 	crewMgr := crew.NewManager(r, crewGit)
 
-	// Resolve account for Claude config
+	// Resolve account for Claude config. Falls back to the invoker's
+	// CLAUDE_CONFIG_DIR when accounts config doesn't resolve, so the crew session
+	// inherits parent auth state instead of landing on the default ~/.claude.json
+	// (gt-j47).
 	accountsPath := constants.MayorAccountsPath(townRoot)
 	claudeConfigDir, accountHandle, err := config.ResolveAccountConfigDir(accountsPath, startCrewAccount)
 	if err != nil {
@@ -1027,6 +1030,9 @@ func runStartCrew(cmd *cobra.Command, args []string) error {
 	}
 	if accountHandle != "" {
 		fmt.Printf("Using account: %s\n", accountHandle)
+	}
+	if claudeConfigDir == "" {
+		claudeConfigDir = os.Getenv("CLAUDE_CONFIG_DIR")
 	}
 
 	// Use manager's Start() method - handles workspace creation, settings, and session
