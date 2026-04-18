@@ -4,6 +4,11 @@
   "enabledPlugins": {
     "beads@beads-marketplace": false
   },
+  "mcpServers": {
+    "deepwork-intelligence": {
+      "command": "di-server"
+    }
+  },
   "hooks": {
     "PreToolUse": [
       {

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`scripts/mayor/mcp-propagate.sh`** — Idempotent propagation of the
+  `deepwork-intelligence` MCP (`di-server`) into every rig-harness
+  `.claude/settings.json` under `polecats/`, `crew/`, `refinery/`, and
+  `witness/`. Spawn templates at `internal/hooks/templates/claude/settings-*.json`
+  now carry the same block so freshly provisioned rigs are wired from the
+  first session. Install as cron with
+  `15 */6 * * * /home/ubuntu/gt/gastown/polecats/furiosa/gastown/scripts/mayor/mcp-propagate.sh >> /home/ubuntu/gt/logs/mcp-propagate.log 2>&1`. (`gt-cpf`)
+
 ### Fixed
 
 - **GT Monitor dashboard and API** (cross-repo `gt-monitor`) — Added missing
