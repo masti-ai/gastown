@@ -7,17 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-
-- **`scripts/mayor/mcp-propagate.sh`** — Idempotent propagation of the
-  `deepwork-intelligence` MCP (`di-server`) into every rig-harness
-  `.claude/settings.json` under `polecats/`, `crew/`, `refinery/`, and
-  `witness/`. Spawn templates at `internal/hooks/templates/claude/settings-*.json`
-  now carry the same block so freshly provisioned rigs are wired from the
-  first session. Install as cron with
-  `15 */6 * * * /home/ubuntu/gt/gastown/polecats/furiosa/gastown/scripts/mayor/mcp-propagate.sh >> /home/ubuntu/gt/logs/mcp-propagate.log 2>&1`. (`gt-cpf`)
-
 ### Fixed
+
+- **MCP wiring corrected** — Reverted `gt-cpf`: Claude Code does not read
+  `mcpServers` from `.claude/settings.json`, so the propagated blocks and the
+  `scripts/mayor/mcp-propagate.sh` cron were dead-weight. Spawn templates,
+  existing rig `settings.json` files, and the stale project-scoped
+  `/home/ubuntu/gt/.mcp.json` are cleaned up. The `deepwork-mind` MCP is now
+  installed at user scope (`claude mcp add -s user deepwork-mind di-server`)
+  so every rig session inherits it without per-file duplication. (`gt-iaj`)
 
 - **GT Monitor dashboard and API** (cross-repo `gt-monitor`) — Added missing
   `/studio` Next.js route, `/v1/usage` endpoint, and `/v1/exec/*` handlers for
