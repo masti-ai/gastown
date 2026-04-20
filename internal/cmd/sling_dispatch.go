@@ -61,11 +61,12 @@ type SlingResult struct {
 // (runSling) retains its own implementation for now (handles dogs, mayor,
 // nudge, and other non-rig targets). See TODO in sling.go.
 //
+// Cross-rig guard is enforced INTERNALLY (de-floo). Callers may still call
+// checkCrossRigGuard() pre-loop for early/batch validation, but it is no longer
+// optional — every dispatch path through executeSling validates that the bead
+// prefix matches the target rig (skipped only with explicit --force).
+//
 // Caller responsibilities (NOT handled by executeSling):
-//   - Cross-rig guard: callers must call checkCrossRigGuard() before executeSling
-//     to verify the bead's prefix matches the target rig. Batch sling does this
-//     pre-loop; queue dispatch skips the guard because the bead prefix was
-//     validated at enqueue time and is immutable.
 //   - wakeRigAgents: callers must call wakeRigAgents() after the dispatch loop
 //     when NoBoot is false. Batch sling calls it post-loop; queue dispatch sets
 //     NoBoot=true to avoid lock contention in the daemon.
@@ -162,6 +163,19 @@ func executeSling(params SlingParams) (*SlingResult, error) {
 	if isDeferredBead(info) && !explicitForce {
 		result.ErrMsg = "deferred"
 		return result, fmt.Errorf("bead %s is deferred (use --force to override)", params.BeadID)
+	}
+
+	// Cross-rig guard (de-floo): bead's prefix must match the target rig.
+	// Previously enforced only by callers; convoy/epic schedulers were silently
+	// skipping it, so cross-rig dispatches landed without a hook in the target
+	// rig's bead store and the polecat exited DEFERRED. Enforced inside
+	// executeSling so all paths (CLI, batch, scheduler) are protected.
+	// Skipped for self-sling (no rig target) and explicit --force overrides.
+	if params.RigName != "" && !explicitForce {
+		if err := checkCrossRigGuard(params.BeadID, params.RigName+"/polecats/_", townRoot); err != nil {
+			result.ErrMsg = err.Error()
+			return result, err
+		}
 	}
 
 	// Send LIFECYCLE:Shutdown to the witness when force-stealing a bead from a
